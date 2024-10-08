@@ -1,36 +1,67 @@
 #![allow(unused_imports)]
-use std::{io::{Cursor, Read, Seek, Write}, net::TcpListener};
+use anyhow::Result;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    net::{TcpListener, TcpStream},
+};
 
-use tokio::io::AsyncReadExt;
+#[repr(u16)]
+enum ErrorCode {
+    UnSupportAPIVersion = 35,
+}
+
+struct Header {
+    api_key: u16,
+    api_version: u16,
+    correlation_id: u32
+}
+
+async fn parse_header(stream: &mut TcpStream) -> Result<Header> {
+    let mut reader = BufReader::new(stream);
+    let _header_len = reader.read_u32().await? as usize;
+    let api_key = reader.read_u16().await?;
+    let api_version = reader.read_u16().await?;
+    let correlation_id = reader.read_u32().await?;
+
+    Ok(Header {
+        api_key,
+        api_version,
+        correlation_id,
+    })
+}
+
+async fn handle_request(mut stream: TcpStream) -> Result<()> {
+    let header = parse_header(&mut stream).await?;
+    let mut writter = BufWriter::new(&mut stream);
+    writter.write_u32(0).await?;
+    writter.write_u32(header.correlation_id).await?;
+    if header.api_version > 4 {
+        writter.write_u16(ErrorCode::UnSupportAPIVersion as u16).await?;
+    }
+
+    writter.flush().await?;
+    Ok(())
+}
 
 #[tokio::main]
-async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:9092").unwrap();
+async fn main() -> Result<()>{
+    let listener = TcpListener::bind("0.0.0.0:9092").await?;
     
-    for stream in listener.incoming() {
+    loop {
+        let stream = listener.accept().await;
         match stream {
-            Ok(mut _stream) => {
+            Ok((stream, _)) => {
                 println!("accepted new connection");
-
-                let mut buf = [0_u8; 4];
-                _stream.read_exact(buf.as_mut_slice()).unwrap();
-                let mut render = Cursor::new(buf);
-                let len = render.read_u32().await.unwrap();
-
-                let mut request = vec![0u8; len.try_into().unwrap()];
-                _stream.read(request.as_mut_slice()).unwrap();
-
-                let mut render = Cursor::new(request);
-                render.read_u16().await.unwrap(); // request_api_key
-                render.read_u16().await.unwrap(); // request_api_version
-                let correlation_id = render.read_u32().await.unwrap();
-                println!("correlation id: {}", correlation_id);
-                _stream.write_all([0, 0, 0, 4].as_slice()).unwrap();
-                _stream.write_all(&correlation_id.to_be_bytes()).unwrap();
+                let response = handle_request(stream).await;
+                if let Err(e) = response {
+                    println!("error: {}", e);
+                }
+                println!("finished handling connection");
             }
             Err(e) => {
                 println!("error: {}", e);
             }
         }
     }
+    
 }
