@@ -11,21 +11,21 @@ enum ErrorCode {
     UnSupportAPIVersion = 35,
 }
 
-struct Header {
+struct RequestHeader {
     api_key: u16,
     api_version: u16,
     correlation_id: u32,
     _client_id: String
 }
 
-async fn parse_header(stream: &mut TcpStream) -> Result<Header> {
+async fn parse_header(stream: &mut TcpStream) -> Result<RequestHeader> {
     let mut reader = BufReader::new(stream);
     let _header_len = reader.read_u32().await? as usize;
     let api_key = reader.read_u16().await?;
     let api_version = reader.read_u16().await?;
     let correlation_id = reader.read_u32().await?;
 
-    Ok(Header {
+    Ok(RequestHeader {
         api_key,
         api_version,
         correlation_id,
@@ -33,7 +33,7 @@ async fn parse_header(stream: &mut TcpStream) -> Result<Header> {
     })
 }
 
-async fn get_resp(header: Header) -> Result<BytesMut> {
+async fn get_resp(header: RequestHeader) -> Result<BytesMut> {
     let mut resp_msg = BytesMut::new();
     resp_msg.put_u32(header.correlation_id);
     match header.api_key {
