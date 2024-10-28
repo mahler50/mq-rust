@@ -1,8 +1,9 @@
 #![allow(unused_imports)]
-use anyhow::Result;
+use anyhow::{Ok, Result};
+use bytes::{BufMut, BytesMut};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream}, stream,
 };
 
 #[repr(u16)]
@@ -13,7 +14,8 @@ enum ErrorCode {
 struct Header {
     api_key: u16,
     api_version: u16,
-    correlation_id: u32
+    correlation_id: u32,
+    _client_id: String
 }
 
 async fn parse_header(stream: &mut TcpStream) -> Result<Header> {
@@ -27,17 +29,47 @@ async fn parse_header(stream: &mut TcpStream) -> Result<Header> {
         api_key,
         api_version,
         correlation_id,
+        _client_id: "".to_string()
     })
+}
+
+async fn get_resp(header: Header) -> Result<BytesMut> {
+    let mut resp_msg = BytesMut::new();
+    resp_msg.put_u32(header.correlation_id);
+    match header.api_key {
+        18 => api_version(&mut resp_msg, header.api_version).await,
+        _ => {}
+    }
+    let mut resp = BytesMut::new();
+    resp.put_u32(resp_msg.len() as u32);
+    resp.put(resp_msg);
+    Ok(resp)
+}
+
+async fn api_version(resp: &mut BytesMut, api_version: u16) {
+    if api_version > 4 {
+        resp.put_u16(ErrorCode::UnSupportAPIVersion as u16);
+    } else {
+        resp.put_u16(0);
+    }
+    resp.put_u8(2);
+    // api_key
+    resp.put_u16(18);
+    // min version
+    resp.put_u16(0);
+    // max version
+    resp.put_u16(4);
+    // throttle_time_ms
+    resp.put_u32(0);
+    resp.put_u8(0);
+    resp.put_u8(0);
 }
 
 async fn handle_request(mut stream: TcpStream) -> Result<()> {
     let header = parse_header(&mut stream).await?;
     let mut writter = BufWriter::new(&mut stream);
-    writter.write_u32(0).await?;
-    writter.write_u32(header.correlation_id).await?;
-    if header.api_version > 4 {
-        writter.write_u16(ErrorCode::UnSupportAPIVersion as u16).await?;
-    }
+    let resp = get_resp(header).await?;
+    writter.write_all(&resp).await?;
 
     writter.flush().await?;
     Ok(())
@@ -50,7 +82,7 @@ async fn main() -> Result<()>{
     loop {
         let stream = listener.accept().await;
         match stream {
-            Ok((stream, _)) => {
+            Result::Ok((stream, _)) => {
                 println!("accepted new connection");
                 let response = handle_request(stream).await;
                 if let Err(e) = response {
