@@ -11,42 +11,14 @@ enum ErrorCode {
     UnSupportAPIVersion = 35,
 }
 
-struct RequestHeader {
-    api_key: u16,
-    api_version: u16,
-    correlation_id: u32,
-    _client_id: String
-}
+// struct Header {
+//     api_key: u16,
+//     api_version: u16,
+//     correlation_id: u32,
+//     _client_id: String
+// }
 
-async fn parse_header(stream: &mut TcpStream) -> Result<RequestHeader> {
-    let mut reader = BufReader::new(stream);
-    let _header_len = reader.read_u32().await? as usize;
-    let api_key = reader.read_u16().await?;
-    let api_version = reader.read_u16().await?;
-    let correlation_id = reader.read_u32().await?;
-
-    Ok(RequestHeader {
-        api_key,
-        api_version,
-        correlation_id,
-        _client_id: "".to_string()
-    })
-}
-
-async fn get_resp(header: RequestHeader) -> Result<BytesMut> {
-    let mut resp_msg = BytesMut::new();
-    resp_msg.put_u32(header.correlation_id);
-    match header.api_key {
-        18 => api_version(&mut resp_msg, header.api_version).await,
-        _ => {}
-    }
-    let mut resp = BytesMut::new();
-    resp.put_u32(resp_msg.len() as u32);
-    resp.put(resp_msg);
-    Ok(resp)
-}
-
-async fn api_version(resp: &mut BytesMut, api_version: u16) {
+async fn handle_api_version(resp: &mut BytesMut, api_version: u16) {
     if api_version > 4 {
         resp.put_u16(ErrorCode::UnSupportAPIVersion as u16);
     } else {
@@ -65,14 +37,31 @@ async fn api_version(resp: &mut BytesMut, api_version: u16) {
     resp.put_u8(0);
 }
 
-async fn handle_request(mut stream: TcpStream) -> Result<()> {
-    let header = parse_header(&mut stream).await?;
-    let mut writter = BufWriter::new(&mut stream);
-    let resp = get_resp(header).await?;
-    writter.write_all(&resp).await?;
+async fn handle_connections(mut stream: TcpStream) -> Result<()> {
+    loop {
+        let mut reader = BufReader::new(&mut stream);
+        // parse request header
+        let _header_len = reader.read_u32().await? as usize;
+        let api_key = reader.read_u16().await?;
+        let api_version = reader.read_u16().await?;
+        let correlation_id = reader.read_u32().await?;
 
-    writter.flush().await?;
-    Ok(())
+        // create response
+        let mut resp_msg = BytesMut::new();
+        resp_msg.put_u32(correlation_id);
+        match api_key {
+            18 => handle_api_version(&mut resp_msg, api_version).await,
+            _ => {}
+        }
+
+        // write response to stream
+        let mut resp = BytesMut::new();
+        resp.put_u32(resp_msg.len() as u32);
+        resp.put(resp_msg);
+        let mut writer = BufWriter::new(&mut stream);
+        writer.write_all(&resp).await?;
+        writer.flush().await?;
+    }
 }
 
 #[tokio::main]
@@ -83,17 +72,15 @@ async fn main() -> Result<()>{
         let stream = listener.accept().await;
         match stream {
             Result::Ok((stream, _)) => {
-                println!("accepted new connection");
-                let response = handle_request(stream).await;
-                if let Err(e) = response {
-                    println!("error: {}", e);
-                }
-                println!("finished handling connection");
+                tokio::spawn(async move { 
+                    if let Err(e) = handle_connections(stream).await {
+                        println!("Error handling connection: {}", e);
+                    }
+                });
             }
             Err(e) => {
                 println!("error: {}", e);
             }
         }
     }
-    
 }
